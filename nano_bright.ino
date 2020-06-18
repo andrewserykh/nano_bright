@@ -1,45 +1,49 @@
-/*  VERSION 2.0
+/*  VERSION 2.2 (18.06.2020)
  *
  *  Управление освещением яхты с HMI панели Nextion
  * 
  *  Диодная лента подключена через MOSFET транзисторы P0903BD
  *  на ШИМ выходы контроллера (Arduino Nano)
- *
- *  SERIAL - HMI NEXTION
- *  D6  - CABIN LIGHT LEFT SIDE
- *  D9  - CABIN LIGHT RIGHT SIDE
- *  D3  - BED LIGHT
- *  D10 - FLOOR LIGHT
- *  D5  - NAVIGATION LIGHTS
+ *  SSerial служит для трансляции команд с контроллера автопилота
+ *  на HMI панель
  * 
  */
 
 #include <EEPROM.h>
 #include <SoftwareSerial.h>
 
-#define btnCABIN    1
-#define btnFLOOR    2
-#define btnBED      3
-#define btnNAV      4
-#define btnMAST     5
+//назначение выходов NANO на ШИМ
+//на nano как ШИМ работают выходы D3, D5, D6, D9, D10, D11
+#define pwmCABIN_LEFT   6
+#define pwmCABIN_RIGHT  9
+#define pwmBED          3
+#define pwmFLOOR        10
+#define pwmNAV          5
 
-#define idCABIN     0x03  // 65 01 03
-#define idCABIN_P   0x09
-#define idCABIN_M   0x08
+#define LED             13
 
-#define idFLOOR     0x07  // 65 01 07
-#define idBED       0x04  // 65 01 04
-#define idBED_P     0x0b
-#define idBED_M     0x0a
+//id элементов на HMI, для того чтобы "ловить" их в посылке при нажатии на панели
+#define idCABIN         0x03  // 65 01 03
+#define idCABIN_P       0x09  //кнопка ADJ+
+#define idCABIN_M       0x08  //кнопка ADJ-
+#define idFLOOR         0x07  // 65 01 07
+#define idBED           0x04  // 65 01 04
+#define idBED_P         0x0b  //ADJ+
+#define idBED_M         0x0a  //ADJ-
+#define idNAV           0x05  // 65 01 05
+#define idMAST          0x06  // 65 01 06
 
-#define idNAV       0x05  // 65 01 05
-#define idMAST      0x06  // 65 01 06
+#define btnCABIN        1 //номер кнопки на HMI панели
+#define btnFLOOR        2 //прописывается для того, чтобы
+#define btnBED          3 //при переключении страниц HMI-
+#define btnNAV          4 //панели подсвечивались включенные
+#define btnMAST         5 //кнопки
 
-#define UNDEFINE   0  //не определен
-#define ON         1  //включение
-#define OFF        2  //выключение
+#define UNDEFINE        0  //не определен
+#define ON              1  //включение
+#define OFF             2  //выключение
 
-//SoftwareSerial SSerial(10, 11); // RX, TX
+SoftwareSerial SSerial(11, 12); // RX, TX
 
 char SerialIn[64]; //буфер приема по serial портам
 byte SerialInLen; //заполнение буфера
@@ -56,29 +60,27 @@ unsigned long ms_blink;
 
 int touch_j=0; //счетчик для включения touch_j калибровки экрана
 
-
 void setup() {
   Serial.begin(9600);
-//  SSerial.begin(9600);
-    
-  pinMode(6, OUTPUT); //шим  было 2
-  pinMode(9, OUTPUT); //шим  было 3
-  pinMode(3, OUTPUT); //шим  было 4
-  pinMode(10, OUTPUT); //шим  было 5
-  pinMode(5, OUTPUT); //шим  было 6
-  pinMode(13, OUTPUT); //led
+  SSerial.begin(9600);
+  pinMode(pwmCABIN_LEFT, OUTPUT);
+  pinMode(pwmCABIN_RIGHT, OUTPUT);
+  pinMode(pwmBED, OUTPUT);
+  pinMode(pwmFLOOR, OUTPUT);
+  pinMode(pwmNAV, OUTPUT);
+  pinMode(LED, OUTPUT); //LED на плате
   ms_blink = millis();
   ms_dim = millis();
-  
-  
-  digitalWrite(10,HIGH);
+
+  //для запуска калибровки HMI надо в течении 3 секунд несколько раз включить, выключить плату
+  digitalWrite(LED, HIGH);
   touch_j = EEPROM.read(0);
   if (touch_j>2) HmiCmd("touch_j"); //вызываем калибровку экрана
   touch_j++;
   EEPROM.write(0, touch_j);
   delay(3000);
   EEPROM.write(0, 0); //если питание не снято, то очищаем счетчик
-  dimMode[0]=ON;
+  digitalWrite(LED,LOW);
 }
 
 
@@ -101,13 +103,11 @@ if (millis() - ms_dim > 20) {
       }
     }//OFF
 
-//на nano как ШИМ работают выходы D3, D5, D6, D9, D10, D11
-    analogWrite(6,dim[0]); //CABIN LEFT
-    analogWrite(9,dim[0]); //CABIN RIGHT
-    
-    analogWrite(3,dim[1]); //BED
-    analogWrite(10,dim[2]); //FLOOR
-    analogWrite(5,dim[3]); //NAV
+    analogWrite(pwmCABIN_LEFT,dim[0]);
+    analogWrite(pwmCABIN_RIGHT,dim[0]);
+    analogWrite(pwmBED,dim[1]);
+    analogWrite(pwmFLOOR,dim[2]);
+    analogWrite(pwmNAV,dim[3]);
 
   } //for
   ms_dim = millis();
@@ -126,16 +126,16 @@ if (millis() - ms_dim > 20) {
 //serial recieve
   while (Serial.available()) {
     char SerialChar = (char)Serial.read();
-//    digitalWrite(13,HIGH);
-//    SSerial.write(SerialChar);
-//    digitalWrite(13,LOW);
+    digitalWrite(LED,HIGH);
+    SSerial.write(SerialChar);
+    digitalWrite(LED,LOW);
     SerialIn[SerialInLen] = SerialChar;
     SerialInLen++;
     SerialMillisRcv = millis(); //для отсрочки обработки  
   }
 
   if (SerialInLen > 0 && (millis() - SerialMillisRcv > 200)) {
-    
+    //_______________id элемента_____________id страницы____
     if (SerialIn[2]==idCABIN && SerialIn[1]==0x01) { //CABIN
       bt[btnCABIN]=!bt[btnCABIN];
       if (bt[btnCABIN])  dimMode[0]=ON;
@@ -189,7 +189,7 @@ if (millis() - ms_dim > 20) {
       bt[btnBED]=1;
     }
 
-    delay(10);
+    delay(10); //пауза для того чтобы HMI успел переключить страницу и объекты обновились
     if (bt[btnCABIN]) { HmiCmd("b1.val=1"); } else { HmiCmd("b1.val=0"); }
     if (bt[btnFLOOR]) { HmiCmd("b2.val=1"); } else { HmiCmd("b2.val=0"); }
     if (bt[btnBED]) { HmiCmd("b3.val=1"); } else { HmiCmd("b3.val=0"); }
@@ -198,17 +198,16 @@ if (millis() - ms_dim > 20) {
     SerialInLen = 0;
   }
 
-// --Перенаправление с SSerial на Serial
-/*
+// --перенаправление с SSerial на Serial
   if (SSerial.available()) {
-    digitalWrite(13,HIGH);
+    digitalWrite(LED,HIGH);
     Serial.write(SSerial.read());
-    digitalWrite(13,LOW);
+    digitalWrite(LED,LOW);
   }
-*/
 
 }
 
+//отправка произвольной команды на HMI
 void HmiCmd(String Object)
 {
   Serial.print(Object);
@@ -217,6 +216,7 @@ void HmiCmd(String Object)
   Serial.write(0xff);
 }
 
+//отправка строки в элемент (передает "")
 void HmiPut(String Object,String Text)
 {
   Serial.print(Object);
