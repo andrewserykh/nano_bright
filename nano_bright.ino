@@ -1,4 +1,4 @@
-/*  VERSION 2.2 (18.06.2020)
+/*  VERSION 3.2 (03.07.2020) OLDBOOTLOADER
  *
  *  Управление освещением яхты с HMI панели Nextion
  * 
@@ -12,13 +12,14 @@
 #include <EEPROM.h>
 #include <SoftwareSerial.h>
 
+#define T_MS_DIM        10 //обновление текущей яркости (скорость включения/выключения)
 //назначение выходов NANO на ШИМ
 //на nano как ШИМ работают выходы D3, D5, D6, D9, D10, D11
-#define pwmCABIN_LEFT   6
-#define pwmCABIN_RIGHT  9
-#define pwmBED          3
-#define pwmFLOOR        10
-#define pwmNAV          5
+#define pwmCABIN_LEFT   9  //CABIN LEFT?    6
+#define pwmCABIN_RIGHT  3  //CABIN LEFT?    9
+#define pwmBED          10  //CABIN RIGHT    3
+#define pwmFLOOR        5  //BED            10
+#define pwmNAV          6  //FLOOR          5
 
 #define LED             13
 
@@ -33,30 +34,63 @@
 #define idNAV           0x05  // 65 01 05
 #define idMAST          0x06  // 65 01 06
 
+#define SLEEP           1 //для переменной SmartMode
+#define CHILL           2
+#define PULSE           3
+#define WAVE            4
+
+#define idSLEEP         0x03 //id с HMI панели 0x02 - экран
+#define idCHILL         0x04
+#define idPULSE         0x05
+#define idWAVE          0x07
+#define idEMPTY1        0x08
+#define idEMPTY2        0x09
+#define idEMPTY3        0x0a
+#define idEMPTY4        0x0b
+
 #define btnCABIN        1 //номер кнопки на HMI панели
 #define btnFLOOR        2 //прописывается для того, чтобы
 #define btnBED          3 //при переключении страниц HMI-
 #define btnNAV          4 //панели подсвечивались включенные
 #define btnMAST         5 //кнопки
 
-#define UNDEFINE        0  //не определен
-#define ON              1  //включение
-#define OFF             2  //выключение
+#define btnSLEEP        6 
+#define btnCHILL        7 
+#define btnPULSE        8 
+#define btnWAVE         9 
+
+#define ON              100  //включение
+#define OFF             0    //выключение
+
+#define CABIN_LEFT      0  //в массиве dim
+#define CABIN_RIGHT     1
+#define BED             3
+#define FLOOR           4
+#define NAV             5
+#define MAST            6
 
 SoftwareSerial SSerial(11, 12); // RX, TX
 
-char SerialIn[64]; //буфер приема по serial портам
+char SerialIn[256]; //буфер приема по serial портам
 byte SerialInLen; //заполнение буфера
 long SerialMillisRcv; //прием по 485 порту (отсрочка на прием всего пакета)
 
+char SSerialIn[256]; //буфер приема по serial портам
+byte SSerialInLen; //заполнение буфера
+long SSerialMillisRcv; //прием по 485 порту (отсрочка на прием всего пакета)
+
 bool bt[100];
 
-int dim[5]; //текущая яркость
-int dimMode[5]; //выключение/выключение
+int dim[10]; //текущая яркость
+int dimSet[10]; //установка яркости
 int fade_amount=1; //шаг яркости
 
 unsigned long ms_dim;
 unsigned long ms_blink;
+
+int SmartMode = 0; //автоматические режимы подсветки
+unsigned long ms_smart; //millis для обновления смарт-подсветки
+unsigned long t_ms_smart; //интервал
 
 int touch_j=0; //счетчик для включения touch_j калибровки экрана
 
@@ -86,29 +120,20 @@ void setup() {
 
 void loop() {
 
-if (millis() - ms_dim > 20) {
-  for (int i=0; i<5; i++){
-    if (dimMode[i]==ON){
-      dim[i]++;
-      if (dim[i]>100) {
-        dim[i] = 100;
-        dimMode[i] = UNDEFINE;
-      }
-    }//ON
-    if (dimMode[i]==OFF){
-      dim[i]--;
-      if (dim[i]<0) {
-        dim[i] = 0;
-        dimMode[i] = UNDEFINE;
-      }
-    }//OFF
-
-    analogWrite(pwmCABIN_LEFT,dim[0]);
-    analogWrite(pwmCABIN_RIGHT,dim[0]);
-    analogWrite(pwmBED,dim[1]);
-    analogWrite(pwmFLOOR,dim[2]);
-    analogWrite(pwmNAV,dim[3]);
-
+if (millis() - ms_dim > T_MS_DIM) { //обновление текущей яркости
+  for (int i=0; i<10; i++){ //перебор массива dim
+    //"догоняем" установленное значение яркости
+    if (dimSet[i] < OFF) dimSet[i] = OFF;
+    if (dim[i] < dimSet[i]) dim[i] = dim[i] + fade_amount;
+    if (dim[i] > dimSet[i]) dim[i] = dim[i] - fade_amount;
+    if (dim[i] < OFF) dim[i] = OFF;
+    if (dim[i] > ON) dim[i] = ON;
+    //передаем на шим
+    analogWrite(pwmCABIN_LEFT,dim[CABIN_LEFT]);
+    analogWrite(pwmCABIN_RIGHT,dim[CABIN_RIGHT]);
+    analogWrite(pwmBED,dim[BED]);
+    analogWrite(pwmFLOOR,dim[FLOOR]);
+    analogWrite(pwmNAV,dim[NAV]);
   } //for
   ms_dim = millis();
 } //millis
@@ -126,9 +151,6 @@ if (millis() - ms_dim > 20) {
 //serial recieve
   while (Serial.available()) {
     char SerialChar = (char)Serial.read();
-    digitalWrite(LED,HIGH);
-    SSerial.write(SerialChar);
-    digitalWrite(LED,LOW);
     SerialIn[SerialInLen] = SerialChar;
     SerialInLen++;
     SerialMillisRcv = millis(); //для отсрочки обработки  
@@ -138,72 +160,155 @@ if (millis() - ms_dim > 20) {
     //_______________id элемента_____________id страницы____
     if (SerialIn[2]==idCABIN && SerialIn[1]==0x01) { //CABIN
       bt[btnCABIN]=!bt[btnCABIN];
-      if (bt[btnCABIN])  dimMode[0]=ON;
-      if (!bt[btnCABIN]) dimMode[0]=OFF;
+      if (bt[btnCABIN])  dimSet[CABIN_LEFT]=ON;
+      if (bt[btnCABIN])  dimSet[CABIN_RIGHT]=ON;
+      if (!bt[btnCABIN]) dimSet[CABIN_LEFT]=OFF;
+      if (!bt[btnCABIN]) dimSet[CABIN_RIGHT]=OFF;      
     }
     
     if (SerialIn[2]==idBED && SerialIn[1]==0x01) { //BED
       bt[btnBED]=!bt[btnBED];
-      if (bt[btnBED])  dimMode[1]=ON;
-      if (!bt[btnBED]) dimMode[1]=OFF;
+      if (bt[btnBED])  dimSet[BED]=ON;
+      if (!bt[btnBED]) dimSet[BED]=OFF;
     }
     
     if (SerialIn[2]==idFLOOR && SerialIn[1]==0x01) { //FLOOR
       bt[btnFLOOR]=!bt[btnFLOOR];
-      if (bt[btnFLOOR])  dimMode[2]=ON;
-      if (!bt[btnFLOOR]) dimMode[2]=OFF;
+      if (bt[btnFLOOR])  dimSet[FLOOR]=ON;
+      if (!bt[btnFLOOR]) dimSet[FLOOR]=OFF;
     }
 
     if (SerialIn[2]==idNAV && SerialIn[1]==0x01) { //NAV
       bt[btnNAV]=!bt[btnNAV];
-      if (bt[btnNAV])  dimMode[3]=ON;
-      if (!bt[btnNAV]) dimMode[3]=OFF;
+      if (bt[btnNAV])  dimSet[NAV]=ON;
+      if (!bt[btnNAV]) dimSet[NAV]=OFF;
     }
 
     if (SerialIn[2]==idMAST && SerialIn[1]==0x01) { //MAST
       bt[btnMAST]=!bt[btnMAST];
-      if (bt[btnMAST])  dimMode[btnMAST]=ON;
-      if (!bt[btnMAST]) dimMode[4]=OFF;
+      if (bt[btnMAST])  dimSet[MAST]=ON;
+      if (!bt[btnMAST]) dimSet[MAST]=OFF;
     }
 
     //ADJ + / -
     if (SerialIn[2]==idCABIN_M && SerialIn[1]==0x01) { //CABIN ADJ
-      dim[0]=dim[0]-20;
-      if (dim[0]<20) dim[0]=5;
+      dimSet[CABIN_LEFT]=dimSet[CABIN_LEFT]-20;
+      if (dimSet[CABIN_LEFT]<20) dimSet[CABIN_LEFT]=5;
+      dimSet[CABIN_RIGHT]=dimSet[CABIN_RIGHT]-20;
+      if (dimSet[CABIN_RIGHT]<20) dimSet[CABIN_RIGHT]=5;
       bt[btnCABIN]=1;
     }
     if (SerialIn[2]==idCABIN_P && SerialIn[1]==0x01) {
-      dim[0]=dim[0]+20;
-      if (dim[0]>100) dim[0]=100;
+      dimSet[CABIN_LEFT]=dimSet[CABIN_LEFT]+20;
+      if (dimSet[CABIN_LEFT]>ON) dimSet[CABIN_LEFT]=ON;
+      dimSet[CABIN_RIGHT]=dimSet[CABIN_RIGHT]+20;
+      if (dimSet[CABIN_RIGHT]>ON) dimSet[CABIN_RIGHT]=ON;
       bt[btnCABIN]=1;
     }
 
     if (SerialIn[2]==idBED_M && SerialIn[1]==0x01) { //BED ADJ
-      dim[1]=dim[1]-20;
-      if (dim[1]<20) dim[1]=5;
+      dimSet[BED]=dimSet[BED]-20;
+      if (dimSet[BED]<20) dimSet[BED]=5;
       bt[btnBED]=1;
     }
     if (SerialIn[2]==idBED_P && SerialIn[1]==0x01) {
-      dim[1]=dim[1]+20;
-      if (dim[1]>100) dim[1]=100;
+      dimSet[BED]=dimSet[BED]+20;
+      if (dimSet[BED]>ON) dimSet[BED]=ON;
       bt[btnBED]=1;
     }
 
-    delay(10); //пауза для того чтобы HMI успел переключить страницу и объекты обновились
+   if (SerialIn[2]==idSLEEP && SerialIn[1]==0x02) { //SMART MENU ---
+      bt[btnSLEEP]=!bt[btnSLEEP];
+      if (bt[btnSLEEP]) {
+        SmartMode=SLEEP;
+        dimSet[CABIN_LEFT] = 50;
+        dimSet[CABIN_RIGHT] = 50;
+        dimSet[BED] = 100;
+        dimSet[FLOOR] = 100;
+        t_ms_smart = 30000; //интервал обновление 30 секунд
+        ms_smart = millis();
+      }
+      if (!bt[btnSLEEP]) SmartMode=0;
+    }
+
+    if (SerialIn[2]==idCHILL && SerialIn[1]==0x02) { //SMART MENU ---
+      bt[btnCHILL]=!bt[btnCHILL];
+      if (bt[btnCHILL]) {
+        SmartMode=CHILL;
+        dimSet[CABIN_LEFT]=random(40,50);
+        dimSet[CABIN_RIGHT]=random(40,50);
+        dimSet[BED]=random(10,30);
+        dimSet[FLOOR]=random(60,100);
+        t_ms_smart = 200; //интервал обновления смарт подсветки
+        ms_smart = millis();
+      }
+      if (!bt[btnCHILL]) SmartMode=0;
+    }
+
+    if (SerialIn[2]==idPULSE && SerialIn[1]==0x02) { //SMART MENU ---
+      bt[btnPULSE]=!bt[btnPULSE];
+      if (bt[btnPULSE]) {
+        SmartMode=PULSE;
+        dimSet[CABIN_LEFT] = 50;
+        dimSet[CABIN_RIGHT] = 30;
+        dimSet[BED] = 20;
+        dimSet[FLOOR] = 100;        
+        t_ms_smart = 500; //интервал обновления смарт подсветки
+        ms_smart = millis();
+      }
+      if (!bt[btnPULSE]) SmartMode=0;
+    }
+
+    delay(20); //пауза для того чтобы HMI успел переключить страницу и объекты обновились
     if (bt[btnCABIN]) { HmiCmd("b1.val=1"); } else { HmiCmd("b1.val=0"); }
     if (bt[btnFLOOR]) { HmiCmd("b2.val=1"); } else { HmiCmd("b2.val=0"); }
     if (bt[btnBED]) { HmiCmd("b3.val=1"); } else { HmiCmd("b3.val=0"); }
     if (bt[btnNAV]) { HmiCmd("b4.val=1"); } else { HmiCmd("b4.val=0"); }
     if (bt[btnMAST]) { HmiCmd("b5.val=1"); } else { HmiCmd("b5.val=0"); }
+
+    SSerial.write(SerialIn); //отправка принятого в SSerial
     SerialInLen = 0;
   }
 
 // --перенаправление с SSerial на Serial
-  if (SSerial.available()) {
+  while (SSerial.available()) {
     digitalWrite(LED,HIGH);
-    Serial.write(SSerial.read());
+    char SSerialChar = (char)SSerial.read();
+    SSerialIn[SSerialInLen] = SSerialChar;
+    SSerialInLen++;
+    SSerialMillisRcv = millis(); //для отсрочки обработки
     digitalWrite(LED,LOW);
+
   }
+
+  if (SSerialInLen > 0 && (millis() - SSerialMillisRcv > 200)) {
+      Serial.print(SSerialIn);
+      SSerialInLen = 0;
+  }
+
+  if (SmartMode == SLEEP && millis() - ms_smart > t_ms_smart){
+    dimSet[CABIN_LEFT]=dimSet[CABIN_LEFT]-20;
+    dimSet[CABIN_RIGHT]=dimSet[CABIN_RIGHT]-20;
+    dimSet[BED]=dimSet[BED]-20;
+    dimSet[FLOOR]=dimSet[FLOOR]-10;
+    ms_smart = millis();  
+  } //SmartMode
+
+  if (SmartMode == PULSE && millis() - ms_smart > t_ms_smart){
+    dimSet[CABIN_LEFT]=random(100);
+    dimSet[CABIN_RIGHT]=random(100);
+    dimSet[BED]=random(100);
+    dimSet[FLOOR]=random(100);
+    ms_smart = millis();
+  } //SmartMode
+
+  if (SmartMode == CHILL && millis() - ms_smart > t_ms_smart){
+    dimSet[CABIN_LEFT]=random(40,50);
+    dimSet[CABIN_RIGHT]=random(40,50);
+    dimSet[BED]=random(10,30);
+    dimSet[FLOOR]=random(60,100);
+    ms_smart = millis();
+  } //SmartMode
 
 }
 
@@ -222,6 +327,18 @@ void HmiPut(String Object,String Text)
   Serial.print(Object);
   Serial.write(0x22);
   Serial.print(Text);
+  Serial.write(0x22);
+  Serial.write(0xff);
+  Serial.write(0xff);
+  Serial.write(0xff);
+}
+
+//отправка строки в элемент (передает "")
+void HmiPutFloat(String Object,float Value)
+{
+  Serial.print(Object);
+  Serial.write(0x22);
+  Serial.print(Value);
   Serial.write(0x22);
   Serial.write(0xff);
   Serial.write(0xff);
