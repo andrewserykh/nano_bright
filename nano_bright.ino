@@ -1,4 +1,4 @@
-/*  VERSION 3.2 (03.07.2020) OLDBOOTLOADER
+/*  VERSION 3.3 (13.07.2020) OLDBOOTLOADER
  *
  *  Управление освещением яхты с HMI панели Nextion
  * 
@@ -69,13 +69,15 @@
 #define NAV             5
 #define MAST            6
 
+#define RX_BUFFER       256
+
 SoftwareSerial SSerial(11, 12); // RX, TX
 
-char SerialIn[256]; //буфер приема по serial портам
+char SerialIn[RX_BUFFER]; //буфер приема по serial портам
 byte SerialInLen; //заполнение буфера
 long SerialMillisRcv; //прием по 485 порту (отсрочка на прием всего пакета)
 
-char SSerialIn[256]; //буфер приема по serial портам
+char SSerialIn[RX_BUFFER]; //буфер приема по serial портам
 byte SSerialInLen; //заполнение буфера
 long SSerialMillisRcv; //прием по 485 порту (отсрочка на прием всего пакета)
 
@@ -152,7 +154,7 @@ if (millis() - ms_dim > T_MS_DIM) { //обновление текущей ярк
   while (Serial.available()) {
     char SerialChar = (char)Serial.read();
     SerialIn[SerialInLen] = SerialChar;
-    SerialInLen++;
+    if (SerialInLen < RX_BUFFER) SerialInLen++;
     SerialMillisRcv = millis(); //для отсрочки обработки  
   }
 
@@ -275,7 +277,7 @@ if (millis() - ms_dim > T_MS_DIM) { //обновление текущей ярк
     digitalWrite(LED,HIGH);
     char SSerialChar = (char)SSerial.read();
     SSerialIn[SSerialInLen] = SSerialChar;
-    SSerialInLen++;
+    if (SSerialInLen < RX_BUFFER) SSerialInLen++;
     SSerialMillisRcv = millis(); //для отсрочки обработки
     digitalWrite(LED,LOW);
 
