@@ -111,7 +111,19 @@ void setup() {
   //для запуска калибровки HMI надо в течении 3 секунд несколько раз включить, выключить плату
   digitalWrite(LED, HIGH);
   touch_j = EEPROM.read(0);
-  if (touch_j>2) HmiCmd("touch_j"); //вызываем калибровку экрана
+  if (touch_j>1) { //питание включено два раза подряд - аварийное включение света
+    dimSet[CABIN_LEFT]=ON;
+    dimSet[CABIN_RIGHT]=ON;
+    dimSet[BED]=ON;
+    dimSet[FLOOR]=30;
+  }
+  if (touch_j>2) {
+    HmiCmd("touch_j"); //вызываем калибровку экрана
+    dimSet[CABIN_LEFT]=ON;
+    dimSet[CABIN_RIGHT]=ON;
+    dimSet[BED]=OFF;
+    dimSet[FLOOR]=30;
+  }
   touch_j++;
   EEPROM.write(0, touch_j);
   delay(3000);
